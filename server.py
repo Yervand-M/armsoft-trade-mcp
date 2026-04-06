@@ -1899,4 +1899,7 @@ if __name__ == "__main__":
         )
 
     # Use SSE transport so n8n can connect over HTTP
-    mcp.run(transport="sse", port=8000)
+    # Port is read from the PORT environment variable (set automatically by Railway)
+    mcp.settings.port = int(os.getenv("PORT", 8000))
+    mcp.settings.host = "0.0.0.0"
+    mcp.run(transport="sse")
