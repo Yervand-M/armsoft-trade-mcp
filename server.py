@@ -1898,31 +1898,68 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
 
-    # Disable the MCP SDK's transport security middleware entirely.
-    # This middleware validates the Host header to prevent DNS rebinding attacks,
-    # but it also blocks legitimate requests from Railway's reverse proxy and
-    # from n8n running on a different domain.
-    # We patch the class's __call__ method directly so it becomes a passthrough
-    # regardless of which module already imported it.
-    import importlib
+    import contextlib
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
 
     port = int(os.getenv("PORT", 8000))
 
-    for _ts_path in [
-        "mcp.server.auth.middleware.transport_security",
-        "mcp.server.middleware.transport_security",
-        "mcp.shared.auth.middleware.transport_security",
-    ]:
-        try:
-            _ts = importlib.import_module(_ts_path)
-            if hasattr(_ts, "TransportSecurityMiddleware"):
-                async def _passthrough(self, scope, receive, send):
-                    await self.app(scope, receive, send)
-                _ts.TransportSecurityMiddleware.__call__ = _passthrough
-                break
-        except Exception:
-            continue
+    # Build a bare Starlette app using the MCP StreamableHTTPSessionManager
+    # directly — without going through FastMCP's run() method and without
+    # the TransportSecurityMiddleware that rejects external Host headers.
+    _custom_app = None
+    try:
+        # Try the known import paths for the session manager across SDK versions
+        _SessionManager = None
+        for _mod_path in (
+            "mcp.server.streamable_http_manager",
+            "mcp.server.http",
+            "mcp.server.streamable_http",
+        ):
+            try:
+                import importlib as _il
+                _m = _il.import_module(_mod_path)
+                if hasattr(_m, "StreamableHTTPSessionManager"):
+                    _SessionManager = _m.StreamableHTTPSessionManager
+                    break
+            except ImportError:
+                continue
 
-    mcp.settings.port = port
-    mcp.settings.host = "0.0.0.0"
-    mcp.run(transport="streamable-http")
+        # Get the low-level MCP Server object wrapped by FastMCP
+        _underlying = None
+        for _attr in ("_mcp_server", "server", "_server", "_app"):
+            if hasattr(mcp, _attr):
+                _underlying = getattr(mcp, _attr)
+                break
+
+        if _SessionManager is not None and _underlying is not None:
+            _mgr = _SessionManager(
+                app=_underlying,
+                event_store=None,
+                json_response=False,
+                stateless=False,
+            )
+
+            @contextlib.asynccontextmanager
+            async def _lifespan(app):
+                async with _mgr.run():
+                    yield
+
+            async def _handle(scope, receive, send):
+                await _mgr.handle_request(scope, receive, send)
+
+            _custom_app = Starlette(
+                routes=[Mount("/mcp", app=_handle)],
+                lifespan=_lifespan,
+            )
+    except Exception as _err:
+        print(f"Custom server setup failed: {_err}", file=sys.stderr)
+
+    if _custom_app is not None:
+        uvicorn.run(_custom_app, host="0.0.0.0", port=port)
+    else:
+        # Fallback to the standard run path
+        mcp.settings.port = port
+        mcp.settings.host = "0.0.0.0"
+        mcp.run(transport="streamable-http")
