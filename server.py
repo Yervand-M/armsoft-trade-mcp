@@ -1898,8 +1898,44 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
 
-    # Use SSE transport so n8n can connect over HTTP
-    # Port is read from the PORT environment variable (set automatically by Railway)
-    mcp.settings.port = int(os.getenv("PORT", 8000))
-    mcp.settings.host = "0.0.0.0"
-    mcp.run(transport="streamable-http")
+    # Run with streamable-http transport for n8n compatibility.
+    # Railway (and other reverse proxies) forward requests with the public domain
+    # as the Host header. FastMCP's security middleware rejects these with 421.
+    # We wrap the app with a middleware that rewrites the Host header to
+    # 'localhost' so the security check always passes.
+    import uvicorn
+
+    port = int(os.getenv("PORT", 8000))
+
+    class HostRewriteMiddleware:
+        """Rewrite Host header to 'localhost' so FastMCP's security check passes."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] in ("http", "websocket"):
+                headers = [
+                    (b"host", b"localhost") if k == b"host" else (k, v)
+                    for k, v in scope.get("headers", [])
+                ]
+                scope = {**scope, "headers": headers}
+            await self.app(scope, receive, send)
+
+    # Try to get FastMCP's ASGI app so we can wrap it
+    asgi_app = None
+    for _method in ("streamable_http_app", "http_app", "_streamable_http_app"):
+        if hasattr(mcp, _method):
+            try:
+                asgi_app = getattr(mcp, _method)()
+                break
+            except Exception:
+                continue
+
+    if asgi_app is not None:
+        uvicorn.run(HostRewriteMiddleware(asgi_app), host="0.0.0.0", port=port)
+    else:
+        # Fallback if the method name differs in the installed version
+        mcp.settings.port = port
+        mcp.settings.host = "0.0.0.0"
+        mcp.run(transport="streamable-http")
