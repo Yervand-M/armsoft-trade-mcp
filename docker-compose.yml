@@ -1,0 +1,10 @@
+services:
+  armsoft-mcp:
+    build: .
+    container_name: armsoft-mcp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ARMSOFT_API_KEY=${ARMSOFT_API_KEY}
+      - ARMSOFT_LANGUAGE=en-US
