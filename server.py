@@ -1890,6 +1890,7 @@ async def trade_get_ecr_checks(params: EcrChecksInput) -> str:
 
 if __name__ == "__main__":
     import sys
+    import importlib
 
     if not API_KEY:
         print(
@@ -1898,8 +1899,36 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
 
-    # The Dockerfile patches transport_security.py at build time so the
-    # MCP security middleware accepts requests from any host (needed for Railway).
+    # ── Bypass TransportSecurityMiddleware for Railway deployment ──────────────
+    # Railway's reverse proxy sends the public domain name as the HTTP Host header.
+    # MCP's TransportSecurityMiddleware rejects any host that is not localhost,
+    # returning 421 Misdirected Request.  We replace the class in every MCP
+    # module namespace before mcp.run() builds the ASGI app, so the patched
+    # (passthrough) version is what actually gets wired into the middleware stack.
+    class _PassthroughMiddleware:
+        """Accepts requests from any host — needed behind Railway's proxy."""
+        def __init__(self, app, *args, **kwargs):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            await self.app(scope, receive, send)
+
+    for _mod_name in [
+        "mcp.server.transport_security",
+        "mcp.server.streamable_http",
+        "mcp.server.streamable_http_manager",
+        "mcp.server.fastmcp.server",
+        "mcp.server.fastmcp",
+        "mcp.server.sse",
+    ]:
+        try:
+            _mod = importlib.import_module(_mod_name)
+            if hasattr(_mod, "TransportSecurityMiddleware"):
+                setattr(_mod, "TransportSecurityMiddleware", _PassthroughMiddleware)
+                print(f"[patch] TransportSecurityMiddleware replaced in {_mod_name}")
+        except ImportError:
+            pass
+
     mcp.settings.port = int(os.getenv("PORT", 8000))
     mcp.settings.host = "0.0.0.0"
     mcp.run(transport="streamable-http")
