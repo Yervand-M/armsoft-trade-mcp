@@ -1898,44 +1898,31 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
 
-    # Run with streamable-http transport for n8n compatibility.
-    # Railway (and other reverse proxies) forward requests with the public domain
-    # as the Host header. FastMCP's security middleware rejects these with 421.
-    # We wrap the app with a middleware that rewrites the Host header to
-    # 'localhost' so the security check always passes.
-    import uvicorn
+    # Disable the MCP SDK's transport security middleware entirely.
+    # This middleware validates the Host header to prevent DNS rebinding attacks,
+    # but it also blocks legitimate requests from Railway's reverse proxy and
+    # from n8n running on a different domain.
+    # We patch the class's __call__ method directly so it becomes a passthrough
+    # regardless of which module already imported it.
+    import importlib
 
     port = int(os.getenv("PORT", 8000))
 
-    class HostRewriteMiddleware:
-        """Rewrite Host header to 'localhost' so FastMCP's security check passes."""
-
-        def __init__(self, app):
-            self.app = app
-
-        async def __call__(self, scope, receive, send):
-            if scope["type"] in ("http", "websocket"):
-                headers = [
-                    (b"host", b"localhost") if k == b"host" else (k, v)
-                    for k, v in scope.get("headers", [])
-                ]
-                scope = {**scope, "headers": headers}
-            await self.app(scope, receive, send)
-
-    # Try to get FastMCP's ASGI app so we can wrap it
-    asgi_app = None
-    for _method in ("streamable_http_app", "http_app", "_streamable_http_app"):
-        if hasattr(mcp, _method):
-            try:
-                asgi_app = getattr(mcp, _method)()
+    for _ts_path in [
+        "mcp.server.auth.middleware.transport_security",
+        "mcp.server.middleware.transport_security",
+        "mcp.shared.auth.middleware.transport_security",
+    ]:
+        try:
+            _ts = importlib.import_module(_ts_path)
+            if hasattr(_ts, "TransportSecurityMiddleware"):
+                async def _passthrough(self, scope, receive, send):
+                    await self.app(scope, receive, send)
+                _ts.TransportSecurityMiddleware.__call__ = _passthrough
                 break
-            except Exception:
-                continue
+        except Exception:
+            continue
 
-    if asgi_app is not None:
-        uvicorn.run(HostRewriteMiddleware(asgi_app), host="0.0.0.0", port=port)
-    else:
-        # Fallback if the method name differs in the installed version
-        mcp.settings.port = port
-        mcp.settings.host = "0.0.0.0"
-        mcp.run(transport="streamable-http")
+    mcp.settings.port = port
+    mcp.settings.host = "0.0.0.0"
+    mcp.run(transport="streamable-http")
