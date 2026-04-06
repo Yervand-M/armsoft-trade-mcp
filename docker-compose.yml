@@ -7,4 +7,5 @@ services:
       - "8000:8000"
     environment:
       - ARMSOFT_API_KEY=${ARMSOFT_API_KEY}
-      - ARMSOFT_LANGUAGE=en-US
+      - ARMSOFT_LANGUAGE=${ARMSOFT_LANGUAGE:-en-US}
+      - ARMSOFT_BASE_URL=${ARMSOFT_BASE_URL:-https://api.armsoft.am/trade/v1}

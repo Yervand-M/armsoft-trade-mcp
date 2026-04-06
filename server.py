@@ -1913,6 +1913,10 @@ if __name__ == "__main__":
         async def __call__(self, scope, receive, send):
             await self.app(scope, receive, send)
 
+        async def validate_request(self, request, *, is_post=False):
+            """No-op — required by mcp>=1.6 which calls this on the security middleware."""
+            return None
+
     for _mod_name in [
         "mcp.server.transport_security",
         "mcp.server.streamable_http",
@@ -1926,6 +1930,9 @@ if __name__ == "__main__":
             if hasattr(_mod, "TransportSecurityMiddleware"):
                 setattr(_mod, "TransportSecurityMiddleware", _PassthroughMiddleware)
                 print(f"[patch] TransportSecurityMiddleware replaced in {_mod_name}")
+            if hasattr(_mod, "_PassthroughMiddleware"):
+                setattr(_mod, "_PassthroughMiddleware", _PassthroughMiddleware)
+                print(f"[patch] _PassthroughMiddleware replaced in {_mod_name}")
         except ImportError:
             pass
 
